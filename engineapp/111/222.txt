@@ -1,0 +1,2647 @@
+--
+-- Create databases for the Sync Framework peer synchronization samples
+-- that use SqlSyncProvider.
+--
+USE master
+GO
+
+IF EXISTS (SELECT [name] FROM [master].[sys].[databases] 
+			   WHERE [name] = N'SyncSamplesDb_SqlPeer1')
+	BEGIN
+	
+		DECLARE @SQL varchar(max)
+		SELECT @SQL = '';
+	
+		SELECT @SQL = COALESCE(@SQL,'') + 'Kill ' + Convert(varchar, SPId) + ';' 
+		FROM master..sysprocesses 
+		WHERE DBId = DB_ID('SyncSamplesDb_SqlPeer1') AND SPId <> @@SPId AND loginame <> 'sa'
+
+		EXEC(@SQL)
+		
+		DROP DATABASE SyncSamplesDb_SqlPeer1
+		
+	END
+
+CREATE DATABASE SyncSamplesDb_SqlPeer1
+GO
+
+USE SyncSamplesDb_SqlPeer1
+GO
+
+CREATE SCHEMA Sales
+GO
+
+CREATE SCHEMA Sync
+GO
+
+
+IF EXISTS (SELECT [name] FROM [master].[sys].[databases] 
+			   WHERE [name] = N'SyncSamplesDb_SqlPeer2')
+	
+	BEGIN
+	
+		DECLARE @SQL varchar(max)
+		SELECT @SQL = '';
+	
+		SELECT @SQL = COALESCE(@SQL,'') + 'Kill ' + Convert(varchar, SPId) + ';' 
+		FROM master..sysprocesses 
+		WHERE DBId = DB_ID('SyncSamplesDb_SqlPeer2') AND SPId <> @@SPId AND loginame <> 'sa'
+
+		EXEC(@SQL)
+		
+		DROP DATABASE SyncSamplesDb_SqlPeer2
+		
+	END
+
+CREATE DATABASE SyncSamplesDb_SqlPeer2
+GO
+
+USE SyncSamplesDb_SqlPeer2
+GO
+
+CREATE SCHEMA Sales
+GO
+
+CREATE SCHEMA Sync
+GO
+
+
+USE SyncSamplesDb_SqlPeer1
+GO
+
+------------------------------------
+--
+-- Create two tables for the Sync Framework synchronization samples.
+--
+
+CREATE TABLE Sales.Customer(
+	CustomerId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(), 
+	CustomerName nvarchar(100) NOT NULL,
+	SalesPerson nvarchar(100) NOT NULL,
+	CustomerType nvarchar(100) NOT NULL)
+
+CREATE TABLE Sales.CustomerContact(
+	CustomerId uniqueidentifier NOT NULL,
+	PhoneNumber nvarchar(100) NOT NULL,
+	PhoneType nvarchar(100) NOT NULL,
+	CONSTRAINT PK_CustomerContact PRIMARY KEY (CustomerId, PhoneType))
+
+ALTER TABLE Sales.CustomerContact
+ADD CONSTRAINT FK_CustomerContact_Customer FOREIGN KEY (CustomerId)
+	REFERENCES Sales.Customer (CustomerId)
+	
+GO
+
+-- Create a procedure to perform a backup and restore
+-- of the database. Create it in SyncSamplesDb_SqlPeer2
+-- so that we can call restore for SyncSamplesDb_SqlPeer1.
+
+USE SyncSamplesDb_SqlPeer2
+GO
+
+CREATE PROCEDURE usp_SampleDbBackupRestore(
+	@Operation varchar(10)
+)
+
+AS
+
+SET @Operation = UPPER(@Operation)
+
+IF @Operation = 'BACKUP'
+BEGIN
+
+	BACKUP DATABASE [SyncSamplesDb_SqlPeer1] 
+	TO  DISK = N'C:\Program Files\Microsoft SQL Server\MSSQL10.MSSQLSERVER\MSSQL\Backup\SyncSamplesDb_SqlPeer1.bak' 
+	WITH NOFORMAT, NOINIT,  NAME = N'SyncSamplesDb_SqlPeer1-Full Database Backup', SKIP, NOREWIND, NOUNLOAD,  STATS = 10
+	
+END
+
+ELSE IF @Operation = 'RESTORE'
+BEGIN
+
+	-- Kill any connections to the database, so that the RESTORE operation can execute.
+	DECLARE @SQL varchar(max)
+	SELECT @SQL = '';
+
+	SELECT @SQL = COALESCE(@SQL,'') + 'Kill ' + Convert(varchar, SPId) + ';' 
+	FROM master..sysprocesses 
+	WHERE DBId = DB_ID('SyncSamplesDb_SqlPeer1') AND SPId <> @@SPId AND loginame <> 'sa'
+
+	EXEC(@SQL)
+	-- Backup the tail of the log.
+	BACKUP LOG [SyncSamplesDb_SqlPeer1] 
+	TO  DISK = N'C:\Program Files\Microsoft SQL Server\MSSQL10.MSSQLSERVER\MSSQL\Backup\SyncSamplesDb_SqlPeer1.bak' 
+	WITH  NO_TRUNCATE , NOFORMAT, NOINIT,  NAME = N'TestBackupRestore-Transaction Log  Backup', SKIP, NOREWIND, NOUNLOAD,  NORECOVERY ,  STATS = 10
+
+	-- Restore the database.
+	RESTORE DATABASE [SyncSamplesDb_SqlPeer1] 
+	FROM  DISK = N'C:\Program Files\Microsoft SQL Server\MSSQL10.MSSQLSERVER\MSSQL\Backup\SyncSamplesDb_SqlPeer1.bak' 
+	WITH FILE = 1,  NOUNLOAD,  STATS = 10
+
+END
+
+ELSE
+	PRINT('Unrecognized operation. @Operation must be set to BACKUP or RESTORE.')
+
+GO
+
+USE SyncSamplesDb_SqlPeer1
+
+GO
+
+------------------------------------
+-- Insert test data.
+--
+--
+-- Wrap the inserts in a procedure so that each snippet
+-- can call the procedure to reset the database after
+-- the snippet completes.
+CREATE PROCEDURE usp_ResetSqlPeerData
+
+AS
+	SET NOCOUNT ON
+	
+	DELETE FROM Sales.CustomerContact
+	DELETE FROM Sales.Customer
+	
+	--INSERT INTO Customer.
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Aerobic Exercise Company', N'James Bailey', N'Wholesale')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Exemplary Cycles', N'James Bailey', N'Retail')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Tandem Bicycle Store', N'Brenda Diaz', N'Wholesale')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Rural Cycle Emporium', N'Brenda Diaz', N'Retail')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Sharp Bikes', N'Brenda Diaz', N'Retail')
+
+	--Declare variables that are used in subsequent inserts.
+	DECLARE @CustomerId uniqueidentifier
+	DECLARE @InsertString nvarchar(1024)
+
+	--INSERT INTO CustomerContact.
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N'Exemplary Cycles'
+	SET @InsertString = 'INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''959-555-0151'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N'Tandem Bicycle Store'
+	SET @InsertString = 'INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''107-555-0138'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N'Rural Cycle Emporium'
+	SET @InsertString = 'INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''158-555-0142'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N'Rural Cycle Emporium'
+	SET @InsertString = 'INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''453-555-0167'', ''Mobile'')'
+	EXECUTE sp_executesql @InsertString
+
+	SET NOCOUNT OFF
+
+GO
+
+EXEC usp_ResetSqlPeerData
+
+GO
+
+-- The following code is used to drop and recreate objects so that
+-- sample applications can be run multiple times. This code is not
+-- required by Sync Framework.
+
+CREATE PROCEDURE usp_CleanupAfterAppRun
+AS
+	SET NOCOUNT ON
+	
+	EXEC usp_ResetSqlPeerData
+	
+	DECLARE @ObjName nvarchar(100);
+	DECLARE @SchemaName nvarchar(100);
+
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_delete_trigger'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TRIGGER ' + @SchemaName + '.' + @ObjName)
+	
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_insert_trigger'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TRIGGER ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_update_trigger'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TRIGGER ' + @SchemaName + '.' + @ObjName)	
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_delete_trigger'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TRIGGER ' + @SchemaName + '.' + @ObjName)
+	
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_insert_trigger'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TRIGGER ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_update_trigger'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TRIGGER ' + @SchemaName + '.' + @ObjName)	
+	
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_tracking'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_tracking'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'scope_config'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+
+
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'scope_info'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+		
+
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_delete'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+			
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_deletemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)			
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_insert'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)	
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_insertmetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_selectchanges'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_selectrow'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_update'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_updatemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)	
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_delete'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+			
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_deletemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)			
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_insert'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)	
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_insertmetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_selectchanges'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_selectrow'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_update'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_updatemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)																	
+		
+GO
+
+
+
+USE SyncSamplesDb_SqlPeer2
+
+GO
+
+CREATE PROCEDURE usp_CleanupAfterAppRun
+AS
+	SET NOCOUNT ON
+	
+	DECLARE @ObjName nvarchar(100);
+	DECLARE @SchemaName nvarchar(100);	
+	
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_tracking'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_tracking'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'scope_config'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+
+
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'scope_info'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)
+		
+
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_delete'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+			
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_deletemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)			
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_insert'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)	
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_insertmetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_selectchanges'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_selectrow'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_update'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer_updatemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)	
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_delete'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+			
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_deletemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)			
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_insert'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)	
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_insertmetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_selectchanges'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_selectrow'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_update'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)
+		
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact_updatemetadata'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP PROCEDURE ' + @SchemaName + '.' + @ObjName)	
+			
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'Customer'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)	
+			
+	SELECT @ObjName = o.[name], @SchemaName = s.[name] FROM [sys].[objects] o
+		JOIN [sys].[schemas] s
+		ON o.[schema_id] = s.[schema_id]
+		WHERE o.[name] = N'CustomerContact'
+		
+		IF LEN(@ObjName) > 0 
+			EXEC('DROP TABLE ' + @SchemaName + '.' + @ObjName)																	
+		
+GO
+
+ 
+
+Suivi des modifications personnalisé pour les scénarios hors connexion
+  Copy CodeCopier le code 
+--
+-- Create a database for the Sync Framework samples.
+--
+USE master
+GO
+
+IF EXISTS (SELECT [name] FROM [master].[sys].[databases] 
+			   WHERE [name] = N'SyncSamplesDb')
+	BEGIN
+		DROP DATABASE SyncSamplesDb
+	END
+
+CREATE DATABASE SyncSamplesDb
+GO
+
+USE SyncSamplesDb
+GO
+
+CREATE SCHEMA Sales
+GO
+
+------------------------------------
+--
+-- Create tables for the Sync Framework samples.
+--
+CREATE TABLE SyncSamplesDb.Sales.Customer(
+	CustomerId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(), 
+	CustomerName nvarchar(100) NOT NULL,
+	SalesPerson nvarchar(100) NOT NULL,
+	CustomerType nvarchar(100) NOT NULL)
+GO
+
+CREATE TABLE SyncSamplesDb.Sales.CustomerContact(
+	CustomerId uniqueidentifier NOT NULL,
+	PhoneNumber nvarchar(100) NOT NULL,
+	PhoneType nvarchar(100) NOT NULL,
+	CONSTRAINT PK_CustomerContact PRIMARY KEY (CustomerId, PhoneType))
+GO
+
+CREATE TABLE SyncSamplesDb.Sales.OrderHeader(
+	OrderId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(),
+	CustomerId uniqueidentifier NOT NULL, 
+	OrderDate datetime NOT NULL DEFAULT GETDATE(),
+	OrderStatus nvarchar(100) NOT NULL)
+GO
+
+CREATE TABLE SyncSamplesDb.Sales.OrderDetail(
+	OrderDetailId int NOT NULL, 
+	OrderId uniqueidentifier NOT NULL, 
+	Product nvarchar(100) NOT NULL, 
+	Quantity int NOT NULL DEFAULT 1,
+	CONSTRAINT PK_OrderDetail PRIMARY KEY (OrderDetailId, OrderId))
+GO
+
+CREATE TABLE SyncSamplesDb.Sales.Vendor(
+	VendorId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(),
+	VendorName nvarchar(100) NOT NULL,
+	CreditRating tinyint NOT NULL,
+	PreferredVendor bit NOT NULL)
+GO
+
+------------------------------------
+--
+-- Create FOREIGN KEY constraints between some of the tables.
+--
+ALTER TABLE SyncSamplesDb.Sales.CustomerContact
+ADD CONSTRAINT FK_CustomerContact_Customer FOREIGN KEY (CustomerId)
+	REFERENCES SyncSamplesDb.Sales.Customer (CustomerId)
+GO
+
+ALTER TABLE SyncSamplesDb.Sales.OrderHeader
+ADD CONSTRAINT FK_OrderHeader_Customer FOREIGN KEY (CustomerId)
+	REFERENCES SyncSamplesDb.Sales.Customer (CustomerId)
+GO
+
+ALTER TABLE SyncSamplesDb.Sales.OrderDetail
+ADD CONSTRAINT FK_OrderDetail_OrderHeader FOREIGN KEY (OrderId)
+	REFERENCES SyncSamplesDb.Sales.OrderHeader (OrderId)
+GO
+
+------------------------------------
+--
+-- Add the tracking columns for bidirectional 
+-- and download only synchronization:
+-- * Add a timestamp column to record the logical time that the row was last updated.
+-- * Add a bigint column to record the logical time that the row was inserted.
+--	 A bigint column is used because a table can have only one timestamp column.
+-- * Add InsertId and UpdateId columns to identify where changes were made.
+--   Specify a default of 0 to indicate a server update.
+
+-- Customer
+ALTER TABLE SyncSamplesDb.Sales.Customer 
+	ADD UpdateTimestamp timestamp
+ALTER TABLE SyncSamplesDb.Sales.Customer 
+	ADD InsertTimestamp binary(8) DEFAULT @@DBTS + 1
+ALTER TABLE SyncSamplesDb.Sales.Customer 
+	ADD UpdateId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+ALTER TABLE SyncSamplesDb.Sales.Customer 
+	ADD InsertId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+GO
+
+-- We add indexes to the Customer and Customer_Tombstone tables
+-- to emphasize that you should take indexes into account
+-- when you implement change-tracking in the server database.
+-- Balance server performance against synchronization performance.
+CREATE NONCLUSTERED INDEX IX_Customer_UpdateTimestamp
+ON Sales.Customer(UpdateTimestamp)
+
+CREATE NONCLUSTERED INDEX IX_Customer_InsertTimestamp
+ON Sales.Customer(InsertTimestamp)
+
+CREATE NONCLUSTERED INDEX IX_Customer_UpdateId
+ON Sales.Customer(UpdateId)
+
+CREATE NONCLUSTERED INDEX IX_Customer_InsertId
+ON Sales.Customer(InsertId)
+GO
+
+-- CustomerContact
+ALTER TABLE SyncSamplesDb.Sales.CustomerContact 
+	ADD UpdateTimestamp timestamp
+ALTER TABLE SyncSamplesDb.Sales.CustomerContact 
+	ADD InsertTimestamp binary(8) DEFAULT @@DBTS + 1
+ALTER TABLE SyncSamplesDb.Sales.CustomerContact 
+	ADD UpdateId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+ALTER TABLE SyncSamplesDb.Sales.CustomerContact 
+	ADD InsertId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+GO
+
+-- OrderHeader
+ALTER TABLE SyncSamplesDb.Sales.OrderHeader 
+	ADD UpdateTimestamp timestamp
+ALTER TABLE SyncSamplesDb.Sales.OrderHeader 
+	ADD InsertTimestamp binary(8) DEFAULT @@DBTS + 1
+ALTER TABLE SyncSamplesDb.Sales.OrderHeader 
+	ADD UpdateId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+ALTER TABLE SyncSamplesDb.Sales.OrderHeader 
+	ADD InsertId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+GO
+
+-- OrderDetail
+ALTER TABLE SyncSamplesDb.Sales.OrderDetail 
+	ADD UpdateTimestamp timestamp
+ALTER TABLE SyncSamplesDb.Sales.OrderDetail 
+	ADD InsertTimestamp binary(8) DEFAULT @@DBTS + 1
+ALTER TABLE SyncSamplesDb.Sales.OrderDetail 
+	ADD UpdateId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+ALTER TABLE SyncSamplesDb.Sales.OrderDetail 
+	ADD InsertId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
+GO
+
+-- Vendor
+-- The data type for the ID columns is int
+-- because the value is mapped by using the
+-- usp_GetOriginatorId procedure, which is 
+-- defined later in this script.
+ALTER TABLE SyncSamplesDb.Sales.Vendor 
+	ADD UpdateTimestamp timestamp
+ALTER TABLE SyncSamplesDb.Sales.Vendor 
+	ADD InsertTimestamp binary(8) DEFAULT @@DBTS + 1
+ALTER TABLE SyncSamplesDb.Sales.Vendor 
+	ADD UpdateId int NOT NULL DEFAULT 0
+ALTER TABLE SyncSamplesDb.Sales.Vendor 
+	ADD InsertId int NOT NULL DEFAULT 0
+GO
+
+------------------------------------
+--
+-- Create tombstone tables to store deletes.
+-- Each tombstone table includes all columns from the base table, except those
+-- we added for tracking. All columns are required if you must have
+-- access to the whole row for conflict resolution.
+--
+CREATE TABLE SyncSamplesDb.Sales.Customer_Tombstone(
+	CustomerId uniqueidentifier NOT NULL PRIMARY KEY NONCLUSTERED, 
+	CustomerName nvarchar(100) NOT NULL,
+	SalesPerson nvarchar(100) NOT NULL,
+	CustomerType nvarchar(100) NOT NULL,
+	DeleteId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+	DeleteTimestamp timestamp)
+GO
+
+CREATE CLUSTERED INDEX IX_Customer_Tombstone_DeleteTimestamp
+ON Sales.Customer_Tombstone(DeleteTimestamp)
+
+CREATE NONCLUSTERED INDEX IX_Customer_Tombstone_DeleteId
+ON Sales.Customer_Tombstone(DeleteId)
+
+
+CREATE TABLE SyncSamplesDb.Sales.CustomerContact_Tombstone(
+	CustomerId uniqueidentifier NOT NULL,
+	PhoneNumber nvarchar(100) NOT NULL,
+	PhoneType nvarchar(100) NOT NULL,
+	DeleteId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+	DeleteTimestamp timestamp,
+	CONSTRAINT PK_CustomerContact_Tombstone PRIMARY KEY NONCLUSTERED (CustomerId, PhoneType))
+GO
+
+CREATE TABLE SyncSamplesDb.Sales.OrderHeader_Tombstone(
+	OrderId uniqueidentifier NOT NULL PRIMARY KEY NONCLUSTERED,
+	CustomerId uniqueidentifier NOT NULL, 
+	OrderDate datetime NOT NULL,
+	OrderStatus nvarchar(100) NOT NULL,
+	DeleteId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+	DeleteTimestamp timestamp)
+GO
+
+CREATE TABLE SyncSamplesDb.Sales.OrderDetail_Tombstone(
+	OrderDetailId int NOT NULL, 
+	OrderId uniqueidentifier NOT NULL, 
+	Product nvarchar(100) NOT NULL, 
+	Quantity int NOT NULL DEFAULT 1,
+	DeleteId uniqueidentifier NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+	DeleteTimestamp timestamp,
+	CONSTRAINT PK_OrderDetail_Tombstone PRIMARY KEY NONCLUSTERED (OrderDetailId, OrderId))
+GO
+
+CREATE TABLE SyncSamplesDb.Sales.Vendor_Tombstone(
+	VendorId uniqueidentifier NOT NULL PRIMARY KEY NONCLUSTERED,
+	VendorName nvarchar(100) NOT NULL,
+	CreditRating tinyint NOT NULL,
+	PreferredVendor bit NOT NULL,
+	DeleteId int NOT NULL DEFAULT 0,
+	DeleteTimestamp timestamp)
+GO
+
+------------------------------------
+-- Create delete triggers.
+-- When a delete occurs in the base table, the trigger inserts a row 
+-- in the tombstones table. Before performing an insert, the trigger 
+-- checks whether the tombstones table already contains a row that has 
+-- the primary key of a deleted row. This occurs if a row has been deleted 
+-- from the base table, reinserted, and deleted again. If such a row is 
+-- detected in the tombstones table, the trigger deletes the row and 
+-- reinserts it.
+--
+
+CREATE TRIGGER Customer_DeleteTrigger 
+ON SyncSamplesDb.Sales.Customer FOR DELETE 
+AS 
+BEGIN 
+    SET NOCOUNT ON
+    DELETE FROM SyncSamplesDb.Sales.Customer_Tombstone 
+		WHERE CustomerId IN (SELECT CustomerId FROM deleted)
+    INSERT INTO SyncSamplesDb.Sales.Customer_Tombstone (CustomerId, CustomerName, SalesPerson, CustomerType) 
+	SELECT CustomerId, CustomerName, SalesPerson, CustomerType FROM deleted
+    SET NOCOUNT OFF
+END
+GO
+
+CREATE TRIGGER CustomerContact_DeleteTrigger 
+ON SyncSamplesDb.Sales.CustomerContact FOR DELETE 
+AS 
+BEGIN 
+    SET NOCOUNT ON 
+    DELETE FROM SyncSamplesDb.Sales.CustomerContact_Tombstone 
+		WHERE CustomerId IN (SELECT CustomerId FROM deleted) AND
+		PhoneType IN (SELECT PhoneType FROM deleted)
+    INSERT INTO SyncSamplesDb.Sales.CustomerContact_Tombstone (CustomerId, PhoneNumber, PhoneType)
+	SELECT CustomerId, PhoneNumber, PhoneType FROM deleted
+    SET NOCOUNT OFF
+END
+GO
+
+CREATE TRIGGER OrderHeader_DeleteTrigger 
+ON SyncSamplesDb.Sales.OrderHeader FOR DELETE 
+AS 
+BEGIN 
+	SET NOCOUNT ON
+    DELETE FROM SyncSamplesDb.Sales.OrderHeader_Tombstone 
+		WHERE OrderId IN (SELECT OrderId FROM deleted)
+    INSERT INTO SyncSamplesDb.Sales.OrderHeader_Tombstone (OrderId, CustomerId, OrderDate, OrderStatus) 
+	SELECT OrderId, CustomerId, OrderDate, OrderStatus FROM deleted
+    SET NOCOUNT OFF
+END
+GO
+
+CREATE TRIGGER OrderDetail_DeleteTrigger 
+ON SyncSamplesDb.Sales.OrderDetail FOR DELETE 
+AS 
+BEGIN 
+    SET NOCOUNT ON 
+    DELETE FROM SyncSamplesDb.Sales.OrderDetail_Tombstone 
+		WHERE OrderDetailId IN (SELECT OrderDetailId FROM deleted) AND
+		OrderId IN (SELECT OrderId FROM deleted)	
+    INSERT INTO SyncSamplesDb.Sales.OrderDetail_Tombstone (OrderDetailId, OrderId, Product, Quantity)
+	SELECT OrderDetailId, OrderId, Product, Quantity FROM deleted
+    SET NOCOUNT OFF
+END
+GO
+
+CREATE TRIGGER Vendor_DeleteTrigger 
+ON SyncSamplesDb.Sales.Vendor FOR DELETE 
+AS 
+BEGIN 
+	SET NOCOUNT ON
+    DELETE FROM SyncSamplesDb.Sales.Vendor_Tombstone 
+		WHERE VendorId IN (SELECT VendorId FROM deleted)
+    INSERT INTO SyncSamplesDb.Sales.Vendor_Tombstone (VendorId, VendorName, CreditRating, PreferredVendor) 
+	SELECT VendorId, VendorName, CreditRating, PreferredVendor FROM deleted
+    SET NOCOUNT OFF
+END
+GO
+
+------------------------------------
+-- Create the stored procedures that are used in some examples
+-- to apply changes to the server. These procedures are
+-- designed to work in cases in which there might be
+-- conflicting data changes.
+
+-- Insert procedure
+CREATE PROCEDURE usp_CustomerApplyInsert (	 
+		@sync_client_id uniqueidentifier,
+		@sync_force_write int,
+		@sync_row_count int out,
+        @CustomerId uniqueidentifier,
+		@CustomerName nvarchar(100),
+		@SalesPerson nvarchar(100),
+		@CustomerType nvarchar(100))        
+AS	
+
+	-- Try to apply an insert if the RetryWithForceWrite option
+	-- was not specified for the sync adapter's insert command.
+	IF @sync_force_write = 0
+	BEGIN
+		INSERT INTO Sales.Customer 
+		(CustomerId, CustomerName, SalesPerson, CustomerType, InsertId, UpdateId)
+		VALUES (@CustomerId, @CustomerName, @SalesPerson, @CustomerType, @sync_client_id, @sync_client_id)
+	END
+	ELSE
+	-- Try to apply an insert if the RetryWithForceWrite option
+	-- was specified for the sync adapter's insert command.
+	BEGIN
+		-- If the row does not exist, try to insert it.
+		-- You might want to include code here to handle 
+		-- possible error conditions.
+		IF NOT EXISTS (SELECT CustomerId FROM Sales.Customer
+				   WHERE CustomerId = @CustomerId)
+		BEGIN
+				INSERT INTO Sales.Customer 
+				(CustomerId, CustomerName, SalesPerson, CustomerType, InsertId, UpdateId)
+				VALUES (@CustomerId, @CustomerName, @SalesPerson, @CustomerType, @sync_client_id, @sync_client_id)		
+		END
+		ELSE
+		-- The row exists, possibly due to a client-insert/
+		-- server-insert conflict. Change the insert into an update.
+		BEGIN
+			UPDATE Sales.Customer 
+			SET CustomerName = @CustomerName, SalesPerson = @SalesPerson,
+			CustomerType = @CustomerType, UpdateId = @sync_client_id
+			WHERE CustomerId = @CustomerId
+		END
+	END
+
+	SET @sync_row_count = @@rowcount
+
+GO -- End insert procedure
+
+
+-- Update Procedure
+CREATE PROCEDURE usp_CustomerApplyUpdate (	
+	@sync_last_received_anchor binary(8), 
+	@sync_client_id uniqueidentifier,
+	@sync_force_write int,
+	@sync_row_count int out,
+    @CustomerId uniqueidentifier,
+    @CustomerName nvarchar(100),
+	@SalesPerson nvarchar(100),
+	@CustomerType nvarchar(100))        
+AS		
+	-- Try to apply an update if the RetryWithForceWrite option
+	-- was not specified for the sync adapter's update command.
+	IF @sync_force_write = 0
+	BEGIN	
+		UPDATE Sales.Customer 
+		SET CustomerName = @CustomerName, SalesPerson = @SalesPerson,
+		CustomerType = @CustomerType, UpdateId = @sync_client_id
+		WHERE CustomerId = @CustomerId
+		AND (UpdateTimestamp <= @sync_last_received_anchor
+		OR UpdateId = @sync_client_id)
+	END
+	ELSE
+	-- Try to apply an update if the RetryWithForceWrite option
+	-- was specified for the sync adapter's update command.
+	BEGIN
+		--If the row exists, update it.
+		-- You might want to include code here to handle 
+		-- possible error conditions.
+		IF EXISTS (SELECT CustomerId FROM Sales.Customer
+				   WHERE CustomerId = @CustomerId)
+		BEGIN
+			UPDATE Sales.Customer 
+			SET CustomerName = @CustomerName, SalesPerson = @SalesPerson,
+			CustomerType = @CustomerType, UpdateId = @sync_client_id
+			WHERE CustomerId = @CustomerId			
+		END
+		
+		-- The row does not exist, possibly due to a client-update/
+		-- server-delete conflict. Change the update into an insert.
+		ELSE
+		BEGIN
+			INSERT INTO Sales.Customer 
+				   (CustomerId, CustomerName, SalesPerson,
+					CustomerType, UpdateId)
+			VALUES (@CustomerId, @CustomerName, @SalesPerson,
+					@CustomerType, @sync_client_id)
+		END
+	END
+
+	SET @sync_row_count = @@rowcount
+
+GO -- End update procedure
+
+
+-- Delete procedure
+CREATE PROCEDURE usp_CustomerApplyDelete (	
+	@sync_last_received_anchor binary(8), 
+	@sync_client_id uniqueidentifier,
+	@sync_force_write int,
+	@sync_row_count int out,
+    @CustomerId uniqueidentifier)
+AS	
+
+	-- Delete the specified row if the anchor and ID
+	-- values allow it, or if the RetryWithForceWrite 
+	-- option was specified for the sync adapter's delete 
+	-- command.
+	DELETE FROM Sales.Customer
+	WHERE (CustomerId = @CustomerId)
+	AND (@sync_force_write = 1
+	OR (UpdateTimestamp <= @sync_last_received_anchor
+	OR UpdateId = @sync_client_id))
+	SET @sync_row_count = @@rowcount
+
+	-- Set the DeleteId in the tombstone table.
+	IF (@sync_row_count > 0)  
+	BEGIN
+		UPDATE Sales.Customer_Tombstone
+		SET DeleteId = @sync_client_id
+		WHERE (CustomerId = @CustomerId)
+	END
+
+GO -- End delete procedure
+
+------------------------------------
+-- Create a mapping table and stored procedure. 
+-- These are used to map client IDs, which are GUIDs,
+-- to integer values. This mapping is not required, but
+-- it can be more convenient than using the GUID value
+-- on the server. The procedure is specified as the 
+-- command for the SelectClientIdCommand property of
+-- DbServerSyncProvider.
+CREATE TABLE IdMapping(
+	ClientId uniqueidentifier NOT NULL PRIMARY KEY, 
+	OriginatorId int NOT NULL)
+GO
+
+--Insert a mapping for the server.
+INSERT INTO IdMapping VALUES ('00000000-0000-0000-0000-000000000000', 0)
+GO
+
+CREATE PROCEDURE usp_GetOriginatorId
+	@sync_client_id uniqueidentifier,
+	@sync_originator_id int out
+
+AS
+     SELECT @sync_originator_id = OriginatorId FROM IdMapping WHERE ClientId = @sync_client_id 
+
+     IF ( @sync_originator_id IS NULL )
+     BEGIN
+          SELECT @sync_originator_id = MAX(OriginatorId) + 1 FROM IdMapping
+          INSERT INTO IdMapping VALUES (@sync_client_id, @sync_originator_id)
+     END
+GO
+
+------------------------------------
+-- Create a stored procedure to return anchor
+-- values that are used to batch changes. 
+CREATE PROCEDURE usp_GetNewBatchAnchor (
+	@sync_last_received_anchor timestamp, 
+	@sync_batch_size bigint,
+	@sync_max_received_anchor timestamp out,
+	@sync_new_received_anchor timestamp out,            
+	@sync_batch_count int output)            
+AS            
+       -- Set a default batch size if a valid one is not passed in.
+       IF  @sync_batch_size IS NULL OR @sync_batch_size <= 0
+	     SET @sync_batch_size = 1000    
+
+	   -- Before selecting the first batch of changes,
+	   -- set the maximum anchor value for this synchronization session.
+       -- After the first time that this procedure is called, 
+	   -- Sync Framework passes a value for @sync_max_received_anchor
+       -- to the procedure. Batches of changes are synchronized until this 
+       -- value is reached.
+       IF @sync_max_received_anchor IS NULL
+         SELECT  @sync_max_received_anchor = MIN_ACTIVE_ROWVERSION() - 1
+       
+       -- If this is the first synchronization session for a database,
+       -- get the lowest timestamp value from the tables. By default,
+       -- Sync Framework uses a value of 0 for @sync_last_received_anchor
+       -- on the first synchronization. If you do not set @sync_last_received_anchor,
+       -- this can cause empty batches to be downloaded until the lowest
+       -- timestamp value is reached.
+       IF @sync_last_received_anchor IS NULL OR @sync_last_received_anchor = 0
+       BEGIN
+                
+		SELECT @sync_last_received_anchor = MIN(TimestampCol) FROM (
+		  SELECT MIN(UpdateTimestamp) AS TimestampCol FROM Sales.Customer
+		  UNION
+		  SELECT MIN(InsertTimestamp) AS TimestampCol FROM Sales.Customer
+		  UNION
+		  SELECT MIN(UpdateTimestamp) AS TimestampCol FROM Sales.OrderHeader
+		  UNION
+		  SELECT MIN(InsertTimestamp) AS TimestampCol FROM Sales.OrderHeader
+		) MinTimestamp	
+       
+		SET @sync_new_received_anchor = @sync_last_received_anchor + @sync_batch_size
+
+		-- Determine how many batches are required during the initial synchronization.
+		IF @sync_batch_count <= 0
+		  SET @sync_batch_count = ((@sync_max_received_anchor / @sync_batch_size) - (@sync_last_received_anchor /  @sync_batch_size))
+
+		END
+
+       ELSE
+       BEGIN
+
+        SET @sync_new_received_anchor = @sync_last_received_anchor + @sync_batch_size
+
+        -- Determine how many batches are required during subsequent synchronizations.
+		IF @sync_batch_count <= 0
+          SET @sync_batch_count = ((@sync_max_received_anchor / @sync_batch_size) - (@sync_new_received_anchor /  @sync_batch_size)) + 1  
+       
+	   END
+
+       -- Check whether this is the last batch.      
+       IF @sync_new_received_anchor >= @sync_max_received_anchor
+       BEGIN
+
+         SET @sync_new_received_anchor = @sync_max_received_anchor        
+         IF @sync_batch_count <= 0
+           SET @sync_batch_count = 1
+
+       END
+GO
+
+-- Create a stored procedure to insert a large number of rows
+-- into the Customer and OrderHeader tables to demonstrate
+-- batching. 
+CREATE PROCEDURE usp_InsertCustomerAndOrderHeader
+	@customer_inserts int,
+	@orderheader_inserts int,
+    @sets_of_inserts int
+AS
+	DECLARE @set_count int
+	SET @set_count = 0
+	DECLARE @c_inserted int
+    SET @c_inserted = 0
+	DECLARE @o_inserted int
+    SET @o_inserted = 0
+	DECLARE @customer_id uniqueidentifier
+    DECLARE @InsertString nvarchar(1024)
+	
+	WHILE @set_count < @sets_of_inserts
+    BEGIN
+	  WHILE @c_inserted < @customer_inserts
+	  BEGIN
+		INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType)
+	      VALUES (N'Rural Cycle Emporium', N'Brenda Diaz', N'Retail')
+		SET @c_inserted = @c_inserted + 1
+	  END
+	  SET @c_inserted = 0
+	
+	  SELECT TOP 1 @customer_id = CustomerId FROM Sales.Customer
+      SET @InsertString = 'INSERT INTO Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@customer_id AS nvarchar(38)) + ''', ''2007-01-28'', ''Complete'')'
+
+	  WHILE @o_inserted < @orderheader_inserts
+	  BEGIN
+	    EXECUTE sp_executesql @InsertString
+	    SET @o_inserted = @o_inserted + 1
+	  END
+      SET @o_inserted = 0	 
+	  SET @set_count = @set_count + 1 
+    END
+GO
+    
+
+------------------------------------
+-- Insert test data.
+--
+--
+
+--Wrap the inserts in a procedure so that each snippet
+--can call the procedure to reset the database after
+--the snippet completes.
+CREATE PROCEDURE usp_InsertSampleData
+
+AS
+
+	SET NOCOUNT ON
+
+	DELETE FROM Sales.Vendor
+	DELETE FROM Sales.OrderDetail
+	DELETE FROM Sales.OrderHeader
+	DELETE FROM Sales.CustomerContact
+	DELETE FROM Sales.Customer
+	
+	DELETE FROM Sales.Vendor_Tombstone
+	DELETE FROM Sales.OrderDetail_Tombstone
+	DELETE FROM Sales.OrderHeader_Tombstone
+	DELETE FROM Sales.CustomerContact_Tombstone
+	DELETE FROM Sales.Customer_Tombstone
+
+	--Insert into Customer.
+	INSERT INTO SyncSamplesDb.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Aerobic Exercise Company', N'James Bailey', N'Wholesale')
+	INSERT INTO SyncSamplesDb.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Exemplary Cycles', N'James Bailey', N'Retail')
+	INSERT INTO SyncSamplesDb.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Tandem Bicycle Store', N'Brenda Diaz', N'Wholesale')
+	INSERT INTO SyncSamplesDb.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Rural Cycle Emporium', N'Brenda Diaz', N'Retail')
+	INSERT INTO SyncSamplesDb.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Sharp Bikes', N'Brenda Diaz', N'Retail')
+
+	--Declare variables that are used in subsequent inserts.
+	DECLARE @CustomerId uniqueidentifier
+	DECLARE @OrderId uniqueidentifier
+	DECLARE @InsertString nvarchar(1024)
+
+	----------------------------------
+	-------- First Customer ----------
+	----------------------------------
+	--No additional inserts for Aerobic Exercise Company
+
+
+	----------------------------------
+	------- Second Customer ----------
+	----------------------------------
+	--Insert into CustomerContact.
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb.Sales.Customer WHERE CustomerName = N'Exemplary Cycles'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''959-555-0151'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderHeader.
+	-- First order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-01-28'', ''Complete'')'
+	EXECUTE sp_executesql @InsertString
+	-- Second order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-02-03'', ''Pending'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderDetail.
+	-- First order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb.Sales.OrderHeader WHERE OrderDate = N'2007-01-28'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Chain'', 3)'
+	EXECUTE sp_executesql @InsertString
+	-- Second order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb.Sales.OrderHeader WHERE OrderDate = N'2007-02-03'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Mountain Tire'', 7)'
+	EXECUTE sp_executesql @InsertString
+
+	----------------------------------
+	-------- Third Customer ----------
+	----------------------------------
+	--Insert into CustomerContact.
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb.Sales.Customer WHERE CustomerName = N'Tandem Bicycle Store'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''107-555-0138'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderHeader.
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-02-04'', ''Complete'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderDetail.
+	SELECT @OrderId = OrderId FROM SyncSamplesDb.Sales.OrderHeader WHERE OrderDate = N'2007-02-04'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Road Pedal'', 4)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (2, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Road Rear Wheel'', 4)'
+	EXECUTE sp_executesql @InsertString
+
+	----------------------------------
+	------- Fourth Customer ----------
+	----------------------------------
+	--Insert into CustomerContact.
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb.Sales.Customer WHERE CustomerName = N'Rural Cycle Emporium'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''158-555-0142'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into CustomerContact (second contact info).
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb.Sales.Customer WHERE CustomerName = N'Rural Cycle Emporium'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''453-555-0167'', ''Mobile'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderHeader.
+	-- First order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-03-12'', ''Complete'')'
+	EXECUTE sp_executesql @InsertString
+	-- Second order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-04-14'', ''Back Ordered'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderDetail.
+	--First order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb.Sales.OrderHeader WHERE OrderDate = N'2007-03-12'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Hydration Pack'', 1)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (2, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Men''''s Sports Shorts'', 3)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (3, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Water Bottle'', 6)'
+	EXECUTE sp_executesql @InsertString
+	--Second order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb.Sales.OrderHeader WHERE OrderDate = N'2007-04-14'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Mountain Tire'', 5)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (2, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Women''''s Mountain Shorts'', 5)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (3, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Road Pedal'', 2)'
+	EXECUTE sp_executesql @InsertString
+
+	----------------------------------
+	-------- Fifth Customer ----------
+	----------------------------------
+	--No additional inserts for Sharp Bikes
+
+
+	
+	--Insert into Vendor.
+	INSERT INTO SyncSamplesDb.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Premier Sport, Inc.', 2, 1)
+	INSERT INTO SyncSamplesDb.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Metro Sport Equipment', 1, 1)
+	INSERT INTO SyncSamplesDb.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Mountain Works', 3, 0)
+	INSERT INTO SyncSamplesDb.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Green Lake Bike Company', 2, 1)
+	INSERT INTO SyncSamplesDb.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Compete, Inc.', 5, 0)
+
+
+	SET NOCOUNT OFF
+
+GO -- End of usp_InsertSampleData
+
+EXEC usp_InsertSampleData
+
+------------------------------------
+--
+--Verify table creation and inserts.
+--
+
+SELECT * FROM SyncSamplesDb.Sales.Customer
+SELECT * FROM SyncSamplesDb.Sales.Customer_Tombstone
+SELECT * FROM SyncSamplesDb.Sales.CustomerContact
+SELECT * FROM SyncSamplesDb.Sales.CustomerContact_Tombstone
+SELECT * FROM SyncSamplesDb.Sales.OrderHeader
+SELECT * FROM SyncSamplesDb.Sales.OrderHeader_Tombstone
+SELECT * FROM SyncSamplesDb.Sales.OrderDetail
+SELECT * FROM SyncSamplesDb.Sales.OrderDetail_Tombstone
+SELECT * FROM SyncSamplesDb.Sales.Vendor
+SELECT * FROM SyncSamplesDb.Sales.Vendor_Tombstone
+
+SELECT c.CustomerId, c.CustomerName, c.SalesPerson, c.CustomerType, cc.PhoneNumber, cc.PhoneType,
+oh.OrderId, oh.OrderDate, oh.OrderStatus, od.OrderDetailId, od.Product, od.Quantity
+FROM SyncSamplesDb.Sales.Customer c 
+	JOIN SyncSamplesDb.Sales.CustomerContact cc
+		ON c.CustomerId = cc.CustomerId
+	JOIN SyncSamplesDb.Sales.OrderHeader oh
+		ON c.CustomerId = oh.CustomerId
+	JOIN SyncSamplesDb.Sales.OrderDetail od
+		ON oh.OrderId = od.OrderId
+ORDER BY c.CustomerName, oh.OrderDate, od.OrderDetailId
+
+ 
+
+Suivi des modifications SQL Server pour les scénarios hors connexion
+  Copy CodeCopier le code 
+--
+-- Create a database for the Sync Framework samples.
+--
+USE master
+GO
+
+IF EXISTS (SELECT [name] FROM [master].[sys].[databases] 
+			   WHERE [name] = N'SyncSamplesDb_ChangeTracking')
+	BEGIN
+		DROP DATABASE SyncSamplesDb_ChangeTracking
+	END
+
+CREATE DATABASE SyncSamplesDb_ChangeTracking
+GO
+
+USE SyncSamplesDb_ChangeTracking
+GO
+
+CREATE SCHEMA Sales
+GO
+
+------------------------------------
+--
+-- Create tables for the Sync Framework samples.
+--
+CREATE TABLE SyncSamplesDb_ChangeTracking.Sales.Customer(
+	CustomerId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(), 
+	CustomerName nvarchar(100) NOT NULL,
+	SalesPerson nvarchar(100) NOT NULL,
+	CustomerType nvarchar(100) NOT NULL)
+GO
+
+CREATE TABLE SyncSamplesDb_ChangeTracking.Sales.CustomerContact(
+	CustomerId uniqueidentifier NOT NULL,
+	PhoneNumber nvarchar(100) NOT NULL,
+	PhoneType nvarchar(100) NOT NULL,
+	CONSTRAINT PK_CustomerContact PRIMARY KEY (CustomerId, PhoneType))
+GO
+
+CREATE TABLE SyncSamplesDb_ChangeTracking.Sales.OrderHeader(
+	OrderId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(),
+	CustomerId uniqueidentifier NOT NULL, 
+	OrderDate datetime NOT NULL DEFAULT GETDATE(),
+	OrderStatus nvarchar(100) NOT NULL)
+GO
+
+CREATE TABLE SyncSamplesDb_ChangeTracking.Sales.OrderDetail(
+	OrderDetailId int NOT NULL, 
+	OrderId uniqueidentifier NOT NULL, 
+	Product nvarchar(100) NOT NULL, 
+	Quantity int NOT NULL DEFAULT 1,
+	CONSTRAINT PK_OrderDetail PRIMARY KEY (OrderDetailId, OrderId))
+GO
+
+CREATE TABLE SyncSamplesDb_ChangeTracking.Sales.Vendor(
+	VendorId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(),
+	VendorName nvarchar(100) NOT NULL,
+	CreditRating tinyint NOT NULL,
+	PreferredVendor bit NOT NULL)
+GO
+
+------------------------------------
+--
+-- Create FOREIGN KEY constraints between some of the tables.
+--
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.CustomerContact
+ADD CONSTRAINT FK_CustomerContact_Customer FOREIGN KEY (CustomerId)
+	REFERENCES SyncSamplesDb_ChangeTracking.Sales.Customer (CustomerId)
+GO
+
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.OrderHeader
+ADD CONSTRAINT FK_OrderHeader_Customer FOREIGN KEY (CustomerId)
+	REFERENCES SyncSamplesDb_ChangeTracking.Sales.Customer (CustomerId)
+GO
+
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.OrderDetail
+ADD CONSTRAINT FK_OrderDetail_OrderHeader FOREIGN KEY (OrderId)
+	REFERENCES SyncSamplesDb_ChangeTracking.Sales.OrderHeader (OrderId)
+GO
+
+
+------------------------------------
+-- Insert test data.
+--
+--
+
+--Wrap the inserts in a procedure so that each snippet
+--can call the procedure to reset the database after
+--the snippet completes.
+CREATE PROCEDURE usp_InsertSampleData
+
+AS
+
+	SET NOCOUNT ON
+
+	DELETE FROM SyncSamplesDb_ChangeTracking.Sales.Vendor
+	DELETE FROM SyncSamplesDb_ChangeTracking.Sales.OrderDetail
+	DELETE FROM SyncSamplesDb_ChangeTracking.Sales.OrderHeader
+	DELETE FROM SyncSamplesDb_ChangeTracking.Sales.CustomerContact
+	DELETE FROM SyncSamplesDb_ChangeTracking.Sales.Customer
+
+	--Insert into Customer.
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Aerobic Exercise Company', N'James Bailey', N'Wholesale')
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Exemplary Cycles', N'James Bailey', N'Retail')
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Tandem Bicycle Store', N'Brenda Diaz', N'Wholesale')
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Rural Cycle Emporium', N'Brenda Diaz', N'Retail')
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N'Sharp Bikes', N'Brenda Diaz', N'Retail')
+
+	--Declare variables that are used in subsequent inserts.
+	DECLARE @CustomerId uniqueidentifier
+	DECLARE @OrderId uniqueidentifier
+	DECLARE @InsertString nvarchar(1024)
+
+	----------------------------------
+	-------- First Customer ----------
+	----------------------------------
+	--No additional inserts for Aerobic Exercise Company
+
+
+	----------------------------------
+	------- Second Customer ----------
+	----------------------------------
+	--Insert into CustomerContact.
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb_ChangeTracking.Sales.Customer WHERE CustomerName = N'Exemplary Cycles'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''959-555-0151'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderHeader.
+	-- First order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-01-28'', ''Complete'')'
+	EXECUTE sp_executesql @InsertString
+	-- Second order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-02-03'', ''Pending'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderDetail.
+	-- First order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb_ChangeTracking.Sales.OrderHeader WHERE OrderDate = N'2007-01-28'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Chain'', 3)'
+	EXECUTE sp_executesql @InsertString
+	-- Second order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb_ChangeTracking.Sales.OrderHeader WHERE OrderDate = N'2007-02-03'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Mountain Tire'', 7)'
+	EXECUTE sp_executesql @InsertString
+
+	----------------------------------
+	-------- Third Customer ----------
+	----------------------------------
+	--Insert into CustomerContact.
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb_ChangeTracking.Sales.Customer WHERE CustomerName = N'Tandem Bicycle Store'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''107-555-0138'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderHeader.
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-02-04'', ''Complete'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderDetail.
+	SELECT @OrderId = OrderId FROM SyncSamplesDb_ChangeTracking.Sales.OrderHeader WHERE OrderDate = N'2007-02-04'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Road Pedal'', 4)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (2, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Road Rear Wheel'', 4)'
+	EXECUTE sp_executesql @InsertString
+
+	----------------------------------
+	------- Fourth Customer ----------
+	----------------------------------
+	--Insert into CustomerContact.
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb_ChangeTracking.Sales.Customer WHERE CustomerName = N'Rural Cycle Emporium'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''158-555-0142'', ''Business'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into CustomerContact (second contact info).
+	SELECT @CustomerId = CustomerId FROM SyncSamplesDb_ChangeTracking.Sales.Customer WHERE CustomerName = N'Rural Cycle Emporium'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''453-555-0167'', ''Mobile'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderHeader.
+	-- First order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-03-12'', ''Complete'')'
+	EXECUTE sp_executesql @InsertString
+	-- Second order
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderHeader (CustomerId, OrderDate, OrderStatus) VALUES (''' + CAST(@CustomerId AS nvarchar(38)) + ''', ''2007-04-14'', ''Back Ordered'')'
+	EXECUTE sp_executesql @InsertString
+
+	--Insert into OrderDetail.
+	--First order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb_ChangeTracking.Sales.OrderHeader WHERE OrderDate = N'2007-03-12'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Hydration Pack'', 1)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (2, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Men''''s Sports Shorts'', 3)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (3, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Water Bottle'', 6)'
+	EXECUTE sp_executesql @InsertString
+	--Second order details
+	SELECT @OrderId = OrderId FROM SyncSamplesDb_ChangeTracking.Sales.OrderHeader WHERE OrderDate = N'2007-04-14'
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (1, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Mountain Tire'', 5)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (2, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Women''''s Mountain Shorts'', 5)'
+	EXECUTE sp_executesql @InsertString
+	SET @InsertString = 'INSERT INTO SyncSamplesDb_ChangeTracking.Sales.OrderDetail (OrderDetailId, OrderId, Product, Quantity) VALUES (3, ''' + CAST(@OrderId AS nvarchar(38)) + ''', ''Road Pedal'', 2)'
+	EXECUTE sp_executesql @InsertString
+
+	----------------------------------
+	-------- Fifth Customer ----------
+	----------------------------------
+	--No additional inserts for Sharp Bikes
+
+
+	
+	--Insert into Vendor.
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Premier Sport, Inc.', 2, 1)
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Metro Sport Equipment', 1, 1)
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Mountain Works', 3, 0)
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Green Lake Bike Company', 2, 1)
+	INSERT INTO SyncSamplesDb_ChangeTracking.Sales.Vendor (VendorName, CreditRating, PreferredVendor) VALUES (N'Compete, Inc.', 5, 0)
+
+
+	SET NOCOUNT OFF
+
+GO -- End of usp_InsertSampleData
+
+EXEC usp_InsertSampleData
+
+------------------------------------
+--
+--Verify table creation and inserts.
+--
+
+SELECT * FROM SyncSamplesDb_ChangeTracking.Sales.Customer
+SELECT * FROM SyncSamplesDb_ChangeTracking.Sales.CustomerContact
+SELECT * FROM SyncSamplesDb_ChangeTracking.Sales.OrderHeader
+SELECT * FROM SyncSamplesDb_ChangeTracking.Sales.OrderDetail
+SELECT * FROM SyncSamplesDb_ChangeTracking.Sales.Vendor
+
+SELECT c.CustomerId, c.CustomerName, c.SalesPerson, c.CustomerType, cc.PhoneNumber, cc.PhoneType,
+oh.OrderId, oh.OrderDate, oh.OrderStatus, od.OrderDetailId, od.Product, od.Quantity
+FROM SyncSamplesDb_ChangeTracking.Sales.Customer c 
+	JOIN SyncSamplesDb_ChangeTracking.Sales.CustomerContact cc
+		ON c.CustomerId = cc.CustomerId
+	JOIN SyncSamplesDb_ChangeTracking.Sales.OrderHeader oh
+		ON c.CustomerId = oh.CustomerId
+	JOIN SyncSamplesDb_ChangeTracking.Sales.OrderDetail od
+		ON oh.OrderId = od.OrderId
+ORDER BY c.CustomerName, oh.OrderDate, od.OrderDetailId
+
+
+--Set snapshot isolation and enable SQL Server change tracking the database.
+ALTER DATABASE SyncSamplesDb_ChangeTracking SET ALLOW_SNAPSHOT_ISOLATION ON
+
+ALTER DATABASE SyncSamplesDb_ChangeTracking
+SET CHANGE_TRACKING = ON
+(CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON)
+
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.Customer
+ENABLE CHANGE_TRACKING
+
+
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.CustomerContact
+ENABLE CHANGE_TRACKING
+WITH (TRACK_COLUMNS_UPDATED = OFF)
+
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.OrderHeader
+ENABLE CHANGE_TRACKING
+WITH (TRACK_COLUMNS_UPDATED = OFF)
+
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.OrderDetail
+ENABLE CHANGE_TRACKING
+WITH (TRACK_COLUMNS_UPDATED = OFF)
+
+ALTER TABLE SyncSamplesDb_ChangeTracking.Sales.Vendor
+ENABLE CHANGE_TRACKING
+WITH (TRACK_COLUMNS_UPDATED = OFF)
+
+ 
+
+Suivi des modifications personnalisé pour les scénarios de collaboration
+  Copy CodeCopier le code 
+--
+-- Create databases for the Sync Framework peer synchronization samples.
+-- Enable snapshot isolation, which is recommended for databases that
+-- participate in sychronization.
+--
+USE master
+GO
+
+IF EXISTS (SELECT [name] FROM [master].[sys].[databases] 
+			   WHERE [name] = N'SyncSamplesDb_Peer1')
+	BEGIN
+	
+		DECLARE @SQL varchar(max)
+		SELECT @SQL = '';
+	
+		SELECT @SQL = COALESCE(@SQL,'') + 'Kill ' + Convert(varchar, SPId) + ';' 
+		FROM master..sysprocesses 
+		WHERE DBId = DB_ID('SyncSamplesDb_Peer1') AND SPId <> @@SPId
+
+		EXEC(@SQL)
+		
+		DROP DATABASE SyncSamplesDb_Peer1
+		
+	END
+
+CREATE DATABASE SyncSamplesDb_Peer1
+GO
+
+ALTER DATABASE SyncSamplesDb_Peer1 SET ALLOW_SNAPSHOT_ISOLATION ON
+GO
+
+
+IF EXISTS (SELECT [name] FROM [master].[sys].[databases] 
+			   WHERE [name] = N'SyncSamplesDb_Peer2')
+	
+	BEGIN
+	
+		DECLARE @SQL varchar(max)
+		SELECT @SQL = '';
+	
+		SELECT @SQL = COALESCE(@SQL,'') + 'Kill ' + Convert(varchar, SPId) + ';' 
+		FROM master..sysprocesses 
+		WHERE DBId = DB_ID('SyncSamplesDb_Peer2') AND SPId <> @@SPId
+
+		EXEC(@SQL)
+		
+		DROP DATABASE SyncSamplesDb_Peer2
+		
+	END
+
+CREATE DATABASE SyncSamplesDb_Peer2
+GO
+
+ALTER DATABASE SyncSamplesDb_Peer2 SET ALLOW_SNAPSHOT_ISOLATION ON
+GO
+
+
+IF EXISTS (SELECT [name] FROM [master].[sys].[databases] 
+			   WHERE [name] = N'SyncSamplesDb_Peer3')
+			   
+	BEGIN
+	
+		DECLARE @SQL varchar(max)
+		SELECT @SQL = '';
+	
+		SELECT @SQL = COALESCE(@SQL,'') + 'Kill ' + Convert(varchar, SPId) + ';' 
+		FROM master..sysprocesses 
+		WHERE DBId = DB_ID('SyncSamplesDb_Peer3') AND SPId <> @@SPId
+
+		EXEC(@SQL)
+		
+		DROP DATABASE SyncSamplesDb_Peer3
+		
+	END
+
+CREATE DATABASE SyncSamplesDb_Peer3
+GO
+
+ALTER DATABASE SyncSamplesDb_Peer3 SET ALLOW_SNAPSHOT_ISOLATION ON
+
+
+
+-- Loop through the three sample peer databases and 
+-- create objects in each database.
+DECLARE @DbNames nvarchar(100)
+SET @DbNames = 'SyncSamplesDb_Peer3__SyncSamplesDb_Peer2__SyncSamplesDb_Peer1__'
+
+DECLARE @CurrentDbName nvarchar(100)
+
+WHILE LEN(@DbNames) > 0
+BEGIN
+
+	SET @CurrentDbName = SUBSTRING(@DbNames, LEN(@DbNames) - 20 , 19)
+	PRINT 'Creating objects in database ' + @CurrentDbName
+
+	IF @CurrentDbName = 'SyncSamplesDb_Peer1'
+	BEGIN
+		USE SyncSamplesDb_Peer1		
+	END
+	ELSE IF @CurrentDbName = 'SyncSamplesDb_Peer2'
+	BEGIN
+		USE SyncSamplesDb_Peer2
+	END
+	ELSE IF @CurrentDbName = 'SyncSamplesDb_Peer3'
+	BEGIN
+		USE SyncSamplesDb_Peer3
+	END
+
+------------------------------------
+--
+-- Create two tables for the Sync Framework peer synchronization samples.
+--
+EXEC('
+
+CREATE SCHEMA Sales
+
+CREATE TABLE Sales.Customer(
+	CustomerId uniqueidentifier NOT NULL PRIMARY KEY DEFAULT NEWID(), 
+	CustomerName nvarchar(100) NOT NULL,
+	SalesPerson nvarchar(100) NOT NULL,
+	CustomerType nvarchar(100) NOT NULL)
+
+CREATE TABLE Sales.CustomerContact(
+	CustomerId uniqueidentifier NOT NULL,
+	PhoneNumber nvarchar(100) NOT NULL,
+	PhoneType nvarchar(100) NOT NULL,
+	CONSTRAINT PK_CustomerContact PRIMARY KEY (CustomerId, PhoneType))
+')
+
+EXEC('
+ALTER TABLE Sales.CustomerContact
+ADD CONSTRAINT FK_CustomerContact_Customer FOREIGN KEY (CustomerId)
+	REFERENCES Sales.Customer (CustomerId)
+')
+
+------------------------------------
+--
+-- Create tables to store scope metadata and to identify which
+-- tables are included in each scope. Create indexes, and insert rows
+-- for the "Sales" scope and its tables. Scope is not related to 
+-- the database schema name, but in this example, they are both named "Sales".
+--
+EXEC('
+
+CREATE SCHEMA Sync
+
+CREATE TABLE Sync.ScopeInfo(       
+	scope_local_id int IDENTITY(1,1),
+    scope_id uniqueidentifier default NEWID(),
+    scope_name nvarchar(100) NOT NULL PRIMARY KEY,
+    scope_sync_knowledge varbinary(max) NULL,
+    scope_tombstone_cleanup_knowledge varbinary(max) NULL,
+    scope_timestamp timestamp,
+    scope_cleanup_timestamp bigint)
+
+CREATE TABLE Sync.ScopeTableMap(    	
+    scope_name nvarchar(100) ,
+    table_name nvarchar(100)     
+    )
+    
+')
+
+EXEC('
+CREATE UNIQUE CLUSTERED INDEX Clustered_ScopeTableMap ON Sync.ScopeTableMap(scope_name, table_name)
+')
+
+EXEC('
+SET NOCOUNT ON
+INSERT INTO Sync.ScopeInfo(scope_name) VALUES (''Sales'')
+INSERT INTO Sync.ScopeTableMap(scope_name, table_name) VALUES (''Sales'', ''Sales.Customer'')
+INSERT INTO Sync.ScopeTableMap(scope_name, table_name) VALUES (''Sales'', ''Sales.CustomerContact'')
+SET NOCOUNT OFF
+')
+
+------------------------------------
+-- Create tracking tables for each base table.
+--
+EXEC('
+CREATE TABLE Sync.Customer_Tracking(
+    
+    CustomerId uniqueidentifier NOT NULL PRIMARY KEY,          
+    
+    update_scope_local_id int NULL, 
+    scope_update_peer_key int,
+    scope_update_peer_timestamp bigint,
+    local_update_peer_key int,
+    local_update_peer_timestamp timestamp,
+
+    create_scope_local_id int NULL,
+    scope_create_peer_key int,
+    scope_create_peer_timestamp bigint,
+    local_create_peer_key int,
+    local_create_peer_timestamp bigint,
+
+    sync_row_is_tombstone int, 
+    restore_timestamp bigint, 
+    last_change_datetime datetime default NULL)
+
+CREATE TABLE Sync.CustomerContact_Tracking(
+
+    CustomerId uniqueidentifier NOT NULL, 
+	PhoneType nvarchar(100) NOT NULL,
+	         
+    update_scope_local_id int NULL, 
+    scope_update_peer_key int,
+    scope_update_peer_timestamp bigint,
+    local_update_peer_key int,
+    local_update_peer_timestamp timestamp,
+
+    create_scope_local_id int NULL,
+    scope_create_peer_key int,
+    scope_create_peer_timestamp bigint,
+    local_create_peer_key int,
+    local_create_peer_timestamp bigint,
+
+    sync_row_is_tombstone int, 
+    restore_timestamp bigint, 
+    last_change_datetime datetime DEFAULT NULL)
+') 
+
+EXEC('
+CREATE NONCLUSTERED INDEX NonClustered_Customer_Tracking
+ON Sync.Customer_Tracking ([local_update_peer_timestamp])
+')
+
+EXEC('
+CREATE NONCLUSTERED INDEX NonClustered_CustomerContact_Tracking
+ON Sync.CustomerContact_Tracking ([local_update_peer_timestamp])
+')-- End of EXEC for table creation.
+
+------------------------------------
+-- Create triggers to insert information into tracking tables.
+--
+
+-- Insert triggers
+EXEC('
+CREATE TRIGGER Customer_InsertTrigger ON Sales.Customer FOR INSERT
+AS
+    
+    UPDATE Sync.Customer_Tracking SET sync_row_is_tombstone = 0, 
+	local_update_peer_key = 0, restore_timestamp = NULL, update_scope_local_id = NULL, 
+	last_change_datetime = GetDate() FROM Sync.Customer_Tracking t JOIN inserted i ON t.[CustomerId] = i.[CustomerId]
+    
+    INSERT INTO Sync.Customer_Tracking([CustomerId], create_scope_local_id, local_create_peer_key, local_create_peer_timestamp, update_scope_local_id, local_update_peer_key, restore_timestamp, sync_row_is_tombstone, last_change_datetime)
+    SELECT [CustomerId], NULL, 0, @@DBTS+1, NULL, 0, NULL, 0, GetDate()
+	FROM inserted WHERE  ( [CustomerId] NOT IN (SELECT [CustomerId] FROM Sync.Customer_Tracking ) )		
+')
+
+EXEC('
+CREATE TRIGGER CustomerContact_InsertTrigger ON Sales.CustomerContact FOR INSERT
+AS
+    
+    UPDATE Sync.CustomerContact_Tracking SET sync_row_is_tombstone = 0, 
+	local_update_peer_key = 0, restore_timestamp = NULL, update_scope_local_id = NULL, 
+	last_change_datetime = GetDate() FROM Sync.CustomerContact_Tracking t JOIN inserted i ON t.[CustomerId] = i.[CustomerId] AND t.[PhoneType] = i.[PhoneType]
+    
+    INSERT INTO Sync.CustomerContact_Tracking([CustomerId], [PhoneType], create_scope_local_id, local_create_peer_key, local_create_peer_timestamp, update_scope_local_id, local_update_peer_key, restore_timestamp, sync_row_is_tombstone, last_change_datetime)
+    SELECT [CustomerId], [PhoneType], NULL, 0, @@DBTS+1, NULL, 0, NULL, 0, GetDate()
+    FROM inserted WHERE  ( 
+    [CustomerId] NOT IN (SELECT [CustomerId] FROM Sync.CustomerContact_Tracking ) AND
+    [PhoneType] NOT IN (SELECT [PhoneType] FROM Sync.CustomerContact_Tracking ))
+')
+
+
+-- Update triggers
+EXEC('
+CREATE TRIGGER Customer_UpdateTrigger ON Sales.Customer FOR UPDATE
+AS    
+    UPDATE t    
+	SET 
+		update_scope_local_id = NULL, local_update_peer_key = 0, 
+		restore_timestamp = NULL, last_change_datetime = GetDate() 
+	FROM Sync.Customer_Tracking t JOIN inserted i ON t.[CustomerId] = i.[CustomerId]     	
+')
+
+EXEC('
+CREATE TRIGGER CustomerContact_UpdateTrigger ON Sales.CustomerContact FOR UPDATE
+AS    
+    UPDATE t    
+	SET 
+		update_scope_local_id = NULL, local_update_peer_key = 0, 
+		restore_timestamp = NULL, last_change_datetime = GetDate() 
+	FROM Sync.CustomerContact_Tracking t JOIN inserted i ON t.[CustomerId] = i.[CustomerId]	AND
+	t.[PhoneType] = i.[PhoneType]
+')
+
+
+-- Delete triggers
+EXEC('
+CREATE TRIGGER Customer_DeleteTrigger ON Sales.Customer FOR DELETE
+AS
+BEGIN
+    UPDATE t 
+        SET 
+			sync_row_is_tombstone = 1, update_scope_local_id = NULL, 
+			local_update_peer_key = 0, restore_timestamp = NULL,
+			last_change_datetime = GetDate() 
+        FROM Sync.Customer_Tracking t JOIN deleted d ON t.[CustomerId] = d.[CustomerId]
+END 
+')
+
+EXEC('
+CREATE TRIGGER CustomerContact_DeleteTrigger ON Sales.CustomerContact FOR DELETE
+AS
+BEGIN
+    UPDATE t 
+        SET 
+			sync_row_is_tombstone = 1, update_scope_local_id = NULL, 
+			local_update_peer_key = 0, restore_timestamp = NULL,
+			last_change_datetime = GetDate() 
+        FROM Sync.CustomerContact_Tracking t JOIN deleted d ON t.[CustomerId] = d.[CustomerId] AND
+		t.[PhoneType] = d.[PhoneType]
+END   	
+')
+
+
+------------------------------------
+--
+-- Create stored procedures that SELECT and apply data and metadata changes.
+--
+
+-- Procedures to select incremental changes from each table.
+
+
+EXEC('
+create procedure Sync.sp_Customer_SelectChanges (
+    @sync_min_timestamp bigint,
+    @sync_metadata_only int,
+    @sync_scope_local_id int,
+    @sync_initialize int
+)
+as
+
+--if @sync_initialize = 0
+--begin
+	-- Perform additional logic if required.
+--end
+	
+begin
+    select  t.CustomerId, 
+			c.CustomerName,
+			c.SalesPerson,
+			c.CustomerType, 
+            t.sync_row_is_tombstone,
+            t.local_update_peer_timestamp as sync_row_timestamp, 
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then case when (t.restore_timestamp is null) then t.local_update_peer_timestamp else t.restore_timestamp end else t.scope_update_peer_timestamp end as sync_update_peer_timestamp,
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_update_peer_key else t.scope_update_peer_key end as sync_update_peer_key,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_timestamp else t.scope_create_peer_timestamp end as sync_create_peer_timestamp,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_key else t.scope_create_peer_key end as sync_create_peer_key
+    from Sales.Customer c right join Sync.Customer_Tracking t on c.CustomerId = t.CustomerId
+    where t.local_update_peer_timestamp > @sync_min_timestamp
+end
+')
+  
+EXEC('
+create procedure Sync.sp_CustomerContact_SelectChanges (
+    @sync_min_timestamp bigint,
+    @sync_metadata_only int,
+    @sync_scope_local_id int,
+    @sync_initialize int
+)
+as
+
+--if @sync_initialize = 0
+--begin
+	-- Perform additional logic if required.
+--end
+
+begin
+    select  t.CustomerId, 
+			t.PhoneType,
+            c.PhoneNumber, 
+            t.sync_row_is_tombstone,
+            t.local_update_peer_timestamp as sync_row_timestamp, 
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then case when (t.restore_timestamp is null) then t.local_update_peer_timestamp else t.restore_timestamp end else t.scope_update_peer_timestamp end as sync_update_peer_timestamp,
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_update_peer_key else t.scope_update_peer_key end as sync_update_peer_key,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_timestamp else t.scope_create_peer_timestamp end as sync_create_peer_timestamp,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_key else t.scope_create_peer_key end as sync_create_peer_key
+    from Sales.CustomerContact c right join Sync.CustomerContact_Tracking t on c.CustomerId = t.CustomerId and c.PhoneType = t.PhoneType
+    where t.local_update_peer_timestamp > @sync_min_timestamp
+end
+')
+
+-- Procedures to apply incremental inserts to each base table
+-- and metadata tracking table.
+EXEC('
+CREATE PROCEDURE Sync.sp_Customer_ApplyInsert (						
+        @CustomerId uniqueidentifier,
+		@CustomerName nvarchar(100),
+		@SalesPerson nvarchar(100),
+		@CustomerType nvarchar(100),
+		@sync_row_count int OUT)        
+AS
+
+    IF NOT EXISTS (SELECT CustomerId FROM Sync.Customer_Tracking 
+					WHERE CustomerId = @CustomerId)
+	    INSERT INTO Sales.Customer (CustomerId, CustomerName, SalesPerson, CustomerType) 
+	    VALUES (@CustomerId, @CustomerName, @SalesPerson, @CustomerType)
+	    SET @sync_row_count = @@rowcount
+')
+
+EXEC('
+create procedure Sync.sp_Customer_InsertMetadata (
+        @CustomerId uniqueidentifier,
+        @sync_scope_local_id int,
+        @sync_row_is_tombstone int,
+        @sync_create_peer_key int ,
+        @sync_create_peer_timestamp bigint,                 
+        @sync_update_peer_key int ,
+        @sync_update_peer_timestamp timestamp,                              
+        @sync_check_concurrency int,    
+        @sync_row_timestamp timestamp,  
+        @sync_row_count int out)        
+as  
+begin
+update Sync.Customer_Tracking set 
+    [create_scope_local_id] = @sync_scope_local_id, 
+    [scope_create_peer_key] = @sync_create_peer_key,
+    [scope_create_peer_timestamp] = @sync_create_peer_timestamp,
+    [local_create_peer_key] = 0,
+    [local_create_peer_timestamp] = @@DBTS+1,
+    [update_scope_local_id] = @sync_scope_local_id,
+    [scope_update_peer_key] = @sync_update_peer_key,
+    [scope_update_peer_timestamp] = @sync_update_peer_timestamp,
+    [local_update_peer_key] = 0,
+    [restore_timestamp] = NULL,
+    [sync_row_is_tombstone] = @sync_row_is_tombstone 
+    where [CustomerId] = @CustomerId
+    and (@sync_check_concurrency = 0 or local_update_peer_timestamp = @sync_row_timestamp) 
+    
+	set @sync_row_count = @@ROWCOUNT
+	
+	if (@sync_row_count = 0 )
+	begin
+		-- inserting metadata for row if it does not already exist
+		-- this can happen if a node sees a delete for a row it never had, we insert only metadata
+		-- for the row in that case
+		insert into Sync.Customer_Tracking (	
+		[CustomerId],
+		[create_scope_local_id], 
+		[scope_create_peer_key],
+		[scope_create_peer_timestamp],
+		[local_create_peer_key],
+		[local_create_peer_timestamp],
+		[update_scope_local_id],
+		[scope_update_peer_key],
+		[scope_update_peer_timestamp],
+		[local_update_peer_key],
+		[restore_timestamp],
+		[sync_row_is_tombstone] )values (
+		@CustomerId,
+		@sync_scope_local_id, 
+		@sync_create_peer_key,
+		@sync_create_peer_timestamp,
+		0,
+		@@DBTS+1,
+		@sync_scope_local_id,
+		@sync_update_peer_key,
+		@sync_update_peer_timestamp,
+		0,
+		NULL,
+		@sync_row_is_tombstone)
+		set @sync_row_count = @@ROWCOUNT
+	end
+end
+')
+
+
+EXEC('
+CREATE PROCEDURE Sync.sp_CustomerContact_ApplyInsert (				
+        @CustomerId uniqueidentifier,
+		@PhoneNumber nvarchar(100),
+		@PhoneType nvarchar(100),
+		@sync_row_count int OUT)        
+AS	
+    IF NOT EXISTS (SELECT CustomerId, PhoneType FROM Sync.CustomerContact_Tracking 
+					WHERE CustomerId = @CustomerId AND PhoneType = @PhoneType)
+	    INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) 
+		VALUES (@CustomerId, @PhoneNumber, @PhoneType)
+	    SET @sync_row_count = @@rowcount	
+')
+
+EXEC('
+create procedure Sync.sp_CustomerContact_InsertMetadata (
+        @CustomerId uniqueidentifier,
+		@PhoneType nvarchar(100),
+        @sync_scope_local_id int,
+        @sync_row_is_tombstone int,
+        @sync_create_peer_key int ,
+        @sync_create_peer_timestamp bigint,                 
+        @sync_update_peer_key int ,
+        @sync_update_peer_timestamp timestamp,                              
+        @sync_check_concurrency int,    
+        @sync_row_timestamp timestamp,  
+        @sync_row_count int out)        
+as  
+begin
+update Sync.CustomerContact_Tracking set 
+    [create_scope_local_id] = @sync_scope_local_id, 
+    [scope_create_peer_key] = @sync_create_peer_key,
+    [scope_create_peer_timestamp] = @sync_create_peer_timestamp,
+    [local_create_peer_key] = 0,
+    [local_create_peer_timestamp] = @@DBTS+1,
+    [update_scope_local_id] = @sync_scope_local_id,
+    [scope_update_peer_key] = @sync_update_peer_key,
+    [scope_update_peer_timestamp] = @sync_update_peer_timestamp,
+    [local_update_peer_key] = 0,
+    [restore_timestamp] = NULL,
+    [sync_row_is_tombstone] = @sync_row_is_tombstone 
+    where [CustomerId] = @CustomerId and [PhoneType] = @PhoneType
+    and (@sync_check_concurrency = 0 or local_update_peer_timestamp = @sync_row_timestamp) 
+    
+	set @sync_row_count = @@ROWCOUNT
+	
+	if (@sync_row_count = 0 )
+	begin
+		-- inserting metadata for row if it does not already exist
+		-- this can happen if a node sees a delete for a row it never had, we insert only metadata
+		-- for the row in that case
+		insert into Sync.CustomerContact_Tracking (	
+		[CustomerId],
+		[PhoneType],
+		[create_scope_local_id], 
+		[scope_create_peer_key],
+		[scope_create_peer_timestamp],
+		[local_create_peer_key],
+		[local_create_peer_timestamp],
+		[update_scope_local_id],
+		[scope_update_peer_key],
+		[scope_update_peer_timestamp],
+		[local_update_peer_key],
+		[restore_timestamp],
+		[sync_row_is_tombstone] )values (
+		@CustomerId,
+		@PhoneType,
+		@sync_scope_local_id, 
+		@sync_create_peer_key,
+		@sync_create_peer_timestamp,
+		0,
+		@@DBTS+1,
+		@sync_scope_local_id,
+		@sync_update_peer_key,
+		@sync_update_peer_timestamp,
+		0,
+		NULL,
+		@sync_row_is_tombstone)
+		set @sync_row_count = @@ROWCOUNT
+	end
+end                
+')
+
+-- Procedures to apply incremental updates to each base table
+-- and metadata tracking table.
+EXEC('
+CREATE PROCEDURE Sync.sp_Customer_ApplyUpdate (									
+        @CustomerId uniqueidentifier,
+		@CustomerName nvarchar(100),
+		@SalesPerson nvarchar(100),
+		@CustomerType nvarchar(100),
+		@sync_min_timestamp bigint , 								
+		@sync_row_count int OUT,
+		@sync_force_write int)        
+AS		
+	UPDATE c
+	SET c.CustomerName = @CustomerName, c.SalesPerson = @SalesPerson, c.CustomerType = @CustomerType      
+	FROM Sales.Customer c JOIN Sync.Customer_Tracking t ON c.CustomerId = t.CustomerId
+	WHERE ((t.local_update_peer_timestamp <= @sync_min_timestamp) OR @sync_force_write = 1)
+		AND t.CustomerId = @CustomerId  
+	SET @sync_row_count = @@rowcount
+')
+
+
+EXEC('
+create procedure Sync.sp_Customer_UpdateMetadata (
+		@CustomerId uniqueidentifier,
+		@sync_scope_local_id int,
+        @sync_row_is_tombstone int,
+        @sync_create_peer_key int,
+        @sync_create_peer_timestamp bigint,                 
+        @sync_update_peer_key int,
+        @sync_update_peer_timestamp timestamp,                      
+        @sync_row_timestamp timestamp,
+        @sync_check_concurrency int,        
+        @sync_row_count int out)        
+as	
+	declare @was_tombstone int
+	select @was_tombstone = sync_row_is_tombstone from Sync.Customer_Tracking 
+	where CustomerId = @CustomerId
+	
+	if (@was_tombstone is not null and @was_tombstone=1 and @sync_row_is_tombstone=0)
+		-- tombstone is getting resurrected, update creation version as well
+		update Sync.Customer_Tracking set
+			[update_scope_local_id] = @sync_scope_local_id, 
+            [scope_update_peer_key] = @sync_update_peer_key,
+            [scope_update_peer_timestamp] = @sync_update_peer_timestamp,
+            [local_update_peer_key] = 0,
+            [restore_timestamp] = NULL,
+            [create_scope_local_id] = @sync_scope_local_id, 
+            [scope_create_peer_key] = @sync_create_peer_key, 
+            [scope_create_peer_timestamp] =  @sync_create_peer_timestamp, 
+            [sync_row_is_tombstone] = @sync_row_is_tombstone 						
+		where CustomerId = @CustomerId 			
+		and (@sync_check_concurrency = 0 or local_update_peer_timestamp = @sync_row_timestamp)
+	else	
+		update Sync.Customer_Tracking set
+			[update_scope_local_id] = @sync_scope_local_id, 
+            [scope_update_peer_key] = @sync_update_peer_key,
+            [scope_update_peer_timestamp] = @sync_update_peer_timestamp,
+            [local_update_peer_key] = 0,
+            [restore_timestamp] = NULL,
+            [sync_row_is_tombstone] = @sync_row_is_tombstone 						
+		where CustomerId = @CustomerId 			
+		and (@sync_check_concurrency = 0 or local_update_peer_timestamp = @sync_row_timestamp)
+	set @sync_row_count = @@rowcount
+')
+
+EXEC('
+CREATE PROCEDURE Sync.sp_CustomerContact_ApplyUpdate (											
+        @CustomerId uniqueidentifier,
+		@PhoneNumber nvarchar(100),
+		@PhoneType nvarchar(100),
+		@sync_min_timestamp bigint ,
+		@sync_row_count int OUT,
+		@sync_force_write int)        
+AS    	
+	
+	UPDATE c
+	SET c.PhoneNumber = @PhoneNumber, c.PhoneType = @PhoneType    
+	FROM Sales.CustomerContact c JOIN Sync.CustomerContact_Tracking t ON c.CustomerId = t.CustomerId AND 
+		c.PhoneType = t.PhoneType
+	WHERE ((t.local_update_peer_timestamp <= @sync_min_timestamp) OR @sync_force_write = 1)
+		AND t.CustomerId = @CustomerId  
+		AND t.PhoneType = @PhoneType
+	SET @sync_row_count = @@rowcount
+')
+
+EXEC('
+create procedure Sync.sp_CustomerContact_UpdateMetadata (
+		@CustomerId uniqueidentifier,
+		@PhoneType nvarchar(100),
+		@sync_scope_local_id int,
+        @sync_row_is_tombstone int,
+        @sync_create_peer_key int ,
+        @sync_create_peer_timestamp bigint,                 
+        @sync_update_peer_key int ,
+        @sync_update_peer_timestamp timestamp,                      
+        @sync_row_timestamp timestamp,
+        @sync_check_concurrency int,        
+        @sync_row_count int out)        
+as	
+	declare @was_tombstone int
+	select @was_tombstone = sync_row_is_tombstone from Sync.CustomerContact_Tracking 
+	where CustomerId = @CustomerId and PhoneType = @PhoneType
+	
+	if (@was_tombstone is not null and @was_tombstone=1 and @sync_row_is_tombstone=0)
+		-- tombstone is getting resurrected, update creation version as well
+		update Sync.CustomerContact_Tracking set
+			[update_scope_local_id] = @sync_scope_local_id, 
+            [scope_update_peer_key] = @sync_update_peer_key,
+            [scope_update_peer_timestamp] = @sync_update_peer_timestamp,
+            [local_update_peer_key] = 0,
+            [restore_timestamp] = NULL,
+            [create_scope_local_id] = @sync_scope_local_id, 
+            [scope_create_peer_key] = @sync_create_peer_key, 
+            [scope_create_peer_timestamp] =  @sync_create_peer_timestamp, 
+            [sync_row_is_tombstone] = @sync_row_is_tombstone 						
+		where CustomerId = @CustomerId and PhoneType = @PhoneType	
+		and (@sync_check_concurrency = 0 or local_update_peer_timestamp = @sync_row_timestamp)
+	else	
+		update Sync.CustomerContact_Tracking set
+			[update_scope_local_id] = @sync_scope_local_id, 
+            [scope_update_peer_key] = @sync_update_peer_key,
+            [scope_update_peer_timestamp] = @sync_update_peer_timestamp,
+            [local_update_peer_key] = 0,
+            [restore_timestamp] = NULL,
+            [sync_row_is_tombstone] = @sync_row_is_tombstone 						
+		where CustomerId = @CustomerId and PhoneType = @PhoneType 
+		and (@sync_check_concurrency = 0 or local_update_peer_timestamp = @sync_row_timestamp)
+	set @sync_row_count = @@rowcount
+')
+
+
+-- Procedures to apply incremental deletes to each base table
+-- and metadata tracking table.
+EXEC('
+CREATE PROCEDURE Sync.sp_Customer_ApplyDelete(
+	@CustomerId uniqueidentifier,	
+	@sync_min_timestamp bigint,
+	@sync_force_write int,	     	
+	@sync_row_count int OUT)	 
+AS  
+	DELETE c
+	FROM Sales.Customer c JOIN Sync.Customer_Tracking t ON c.CustomerId = t.CustomerId
+	WHERE (t.local_update_peer_timestamp <= @sync_min_timestamp OR @sync_force_write = 1)       
+		AND t.CustomerId = @CustomerId            
+	SET @sync_row_count = @@rowcount              
+')
+
+EXEC('
+CREATE PROCEDURE Sync.sp_Customer_DeleteMetadata(
+    @CustomerId uniqueidentifier,			
+	@sync_row_timestamp timestamp,	
+	@sync_check_concurrency int,	
+	@sync_row_count int OUT) 	
+AS    
+	DELETE t
+	FROM Sync.Customer_Tracking t 
+	WHERE t.CustomerId = @CustomerId 
+		AND (@sync_check_concurrency = 0 OR t.local_update_peer_timestamp = @sync_row_timestamp)
+	SET @sync_row_count = @@rowcount           	
+')
+
+EXEC('
+CREATE PROCEDURE Sync.sp_CustomerContact_ApplyDelete(
+	@CustomerId uniqueidentifier,
+	@PhoneType nvarchar(100),
+	@sync_min_timestamp bigint,
+	@sync_force_write int,			
+	@sync_row_count int OUT)	    
+AS	
+	DELETE c
+	FROM Sales.CustomerContact c JOIN Sync.CustomerContact_Tracking t ON c.CustomerId = t.CustomerId
+		AND c.PhoneType = t.PhoneType
+	WHERE (t.local_update_peer_timestamp <= @sync_min_timestamp OR @sync_force_write = 1)         
+		AND t.CustomerId = @CustomerId
+		AND t.PhoneType = @PhoneType         
+	SET @sync_row_count = @@rowcount              
+')
+
+EXEC('
+CREATE PROCEDURE Sync.sp_CustomerContact_DeleteMetadata(	
+    @CustomerId uniqueidentifier,
+	@PhoneType nvarchar(100),			
+	@sync_row_timestamp timestamp,	
+    @sync_check_concurrency int,	
+	@sync_row_count int OUT) 	
+AS    
+	DELETE t
+	FROM Sync.CustomerContact_Tracking t 
+	WHERE t.CustomerId = @CustomerId AND t.PhoneType = @PhoneType
+		AND (@sync_check_concurrency = 0 OR t.local_update_peer_timestamp = @sync_row_timestamp)
+	SET @sync_row_count = @@rowcount           	
+')
+
+
+-- Procedures to select conflicting rows from each base table and
+-- metadata tracking table.
+EXEC('
+create procedure Sync.sp_Customer_SelectRow
+        @CustomerId uniqueidentifier,
+		@sync_scope_local_id int
+as
+	select  t.CustomerId, 
+			c.CustomerName,
+			c.SalesPerson,
+			c.CustomerType, 
+            t.sync_row_is_tombstone,
+            t.local_update_peer_timestamp as sync_row_timestamp, 
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then case when (t.restore_timestamp is null) then t.local_update_peer_timestamp else t.restore_timestamp end else t.scope_update_peer_timestamp end as sync_update_peer_timestamp,
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_update_peer_key else t.scope_update_peer_key end as sync_update_peer_key,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_timestamp else t.scope_create_peer_timestamp end as sync_create_peer_timestamp,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_key else t.scope_create_peer_key end as sync_create_peer_key
+    from Sales.Customer c right join Sync.Customer_Tracking t on c.CustomerId = t.CustomerId    
+    where c.CustomerId = @CustomerId 
+')
+
+EXEC('
+create procedure Sync.sp_CustomerContact_SelectRow
+        @CustomerId uniqueidentifier,
+        @PhoneType nvarchar(100),
+		@sync_scope_local_id int
+as
+	select  t.CustomerId, 
+			t.PhoneType,
+            c.PhoneNumber, 
+            t.sync_row_is_tombstone,
+            t.local_update_peer_timestamp as sync_row_timestamp, 
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then case when (t.restore_timestamp is null) then t.local_update_peer_timestamp else t.restore_timestamp end else t.scope_update_peer_timestamp end as sync_update_peer_timestamp,
+            case when (t.update_scope_local_id is null or t.update_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_update_peer_key else t.scope_update_peer_key end as sync_update_peer_key,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_timestamp else t.scope_create_peer_timestamp end as sync_create_peer_timestamp,
+            case when (t.create_scope_local_id is null or t.create_scope_local_id <> @sync_scope_local_id) 
+                 then t.local_create_peer_key else t.scope_create_peer_key end as sync_create_peer_key
+    from Sales.CustomerContact c right join Sync.CustomerContact_Tracking t on c.CustomerId = t.CustomerId and c.PhoneType = t.PhoneType   
+    where c.CustomerId = @CustomerId and c.PhoneType = @PhoneType
+')
+
+
+-- Procedures to select metadata that can be cleaned up from each
+-- metadata tracking table.
+EXEC('
+CREATE PROCEDURE Sync.sp_Customer_SelectMetadata     
+	@metadata_aging_in_days int,
+	@sync_scope_local_id int
+AS
+	IF @metadata_aging_in_days = -1
+		BEGIN
+			SELECT	CustomerId,
+					local_update_peer_timestamp as sync_row_timestamp,  
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then case when (restore_timestamp is null) then local_update_peer_timestamp else restore_timestamp end else scope_update_peer_timestamp end as sync_update_peer_timestamp,
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then local_update_peer_key else scope_update_peer_key end as sync_update_peer_key,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_timestamp else scope_create_peer_timestamp end as sync_create_peer_timestamp,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_key else scope_create_peer_key end as sync_create_peer_key
+			FROM Sync.Customer_Tracking
+			WHERE sync_row_is_tombstone = 1
+		END
+	
+	ELSE
+		BEGIN
+			SELECT	CustomerId,
+					local_update_peer_timestamp as sync_row_timestamp,  
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then case when (restore_timestamp is null) then local_update_peer_timestamp else restore_timestamp end else scope_update_peer_timestamp end as sync_update_peer_timestamp,
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then local_update_peer_key else scope_update_peer_key end as sync_update_peer_key,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_timestamp else scope_create_peer_timestamp end as sync_create_peer_timestamp,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_key else scope_create_peer_key end as sync_create_peer_key
+			FROM Sync.Customer_Tracking
+			WHERE sync_row_is_tombstone = 1 AND
+			DATEDIFF(day, last_change_datetime, GETDATE()) > @metadata_aging_in_days
+		END
+')
+
+EXEC('
+CREATE PROCEDURE Sync.sp_CustomerContact_SelectMetadata  
+	@metadata_aging_in_days int,
+	@sync_scope_local_id int  
+AS
+	IF @metadata_aging_in_days = -1
+		BEGIN
+			SELECT	CustomerId,
+					PhoneType,
+					local_update_peer_timestamp as sync_row_timestamp,  
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then case when (restore_timestamp is null) then local_update_peer_timestamp else restore_timestamp end else scope_update_peer_timestamp end as sync_update_peer_timestamp,
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then local_update_peer_key else scope_update_peer_key end as sync_update_peer_key,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_timestamp else scope_create_peer_timestamp end as sync_create_peer_timestamp,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_key else scope_create_peer_key end as sync_create_peer_key 
+					FROM Sync.CustomerContact_Tracking
+			WHERE sync_row_is_tombstone = 1
+		END
+	
+	ELSE
+		BEGIN
+			SELECT	CustomerId,
+					PhoneType,
+					local_update_peer_timestamp as sync_row_timestamp,  
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then case when (restore_timestamp is null) then local_update_peer_timestamp else restore_timestamp end else scope_update_peer_timestamp end as sync_update_peer_timestamp,
+					case when (update_scope_local_id is null or update_scope_local_id <> @sync_scope_local_id) 
+						then local_update_peer_key else scope_update_peer_key end as sync_update_peer_key,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_timestamp else scope_create_peer_timestamp end as sync_create_peer_timestamp,
+					case when (create_scope_local_id is null or create_scope_local_id <> @sync_scope_local_id) 
+						then local_create_peer_key else scope_create_peer_key end as sync_create_peer_key
+			FROM Sync.CustomerContact_Tracking
+			WHERE sync_row_is_tombstone = 1 AND
+			DATEDIFF(day, last_change_datetime, GETDATE()) > @metadata_aging_in_days
+		END
+')
+
+EXEC('
+CREATE PROCEDURE Sync.sp_SelectSharedScopes
+      @sync_scope_name nvarchar(100)      
+AS
+   SELECT ScopeTableMap2.table_name AS sync_table_name, 
+          ScopeTableMap2.scope_name AS sync_shared_scope_name
+   FROM Sync.ScopeTableMap ScopeTableMap1 JOIN Sync.ScopeTableMap ScopeTableMap2
+   ON ScopeTableMap1.table_name = ScopeTableMap2.table_name
+   AND ScopeTableMap1.scope_name = @sync_scope_name
+   WHERE ScopeTableMap2.scope_name <> @sync_scope_name
+')
+
+------------------------------------
+-- Insert test data.
+--
+--
+-- Wrap the inserts in a procedure so that each snippet
+-- can call the procedure to reset the database after
+-- the snippet completes. The procecure for the first
+-- peer includes inserts into the base tables. The other
+-- peers receive inserts during the first syncyhronization
+-- session.
+IF @CurrentDbName <> 'SyncSamplesDb_Peer1'
+BEGIN
+
+EXEC('
+CREATE PROCEDURE usp_ResetPeerData
+
+AS
+	SET NOCOUNT ON
+
+	DELETE FROM Sync.CustomerContact_Tracking
+	DELETE FROM Sync.Customer_Tracking
+	DELETE FROM Sales.CustomerContact
+	DELETE FROM Sales.Customer
+	
+	SET NOCOUNT OFF
+')
+END
+
+ELSE
+BEGIN
+
+EXEC('
+CREATE PROCEDURE usp_ResetPeerData
+
+AS
+	SET NOCOUNT ON
+
+	DELETE FROM Sync.CustomerContact_Tracking
+	DELETE FROM Sync.Customer_Tracking
+	DELETE FROM Sales.CustomerContact
+	DELETE FROM Sales.Customer
+
+	--INSERT INTO Customer.
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N''Aerobic Exercise Company'', N''James Bailey'', N''Wholesale'')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N''Exemplary Cycles'', N''James Bailey'', N''Retail'')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N''Tandem Bicycle Store'', N''Brenda Diaz'', N''Wholesale'')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N''Rural Cycle Emporium'', N''Brenda Diaz'', N''Retail'')
+	INSERT INTO Sales.Customer (CustomerName, SalesPerson, CustomerType) VALUES (N''Sharp Bikes'', N''Brenda Diaz'', N''Retail'')
+
+	--Declare variables that are used in subsequent inserts.
+	DECLARE @CustomerId uniqueidentifier
+	DECLARE @InsertString nvarchar(1024)
+
+	--INSERT INTO CustomerContact.
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N''Exemplary Cycles''
+	SET @InsertString = ''INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES ('''''' + CAST(@CustomerId AS nvarchar(38)) + '''''', ''''959-555-0151'''', ''''Business'''')''
+	EXECUTE sp_executesql @InsertString
+
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N''Tandem Bicycle Store''
+	SET @InsertString = ''INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES ('''''' + CAST(@CustomerId AS nvarchar(38)) + '''''', ''''107-555-0138'''', ''''Business'''')''
+	EXECUTE sp_executesql @InsertString
+
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N''Rural Cycle Emporium''
+	SET @InsertString = ''INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES ('''''' + CAST(@CustomerId AS nvarchar(38)) + '''''', ''''158-555-0142'''', ''''Business'''')''
+	EXECUTE sp_executesql @InsertString
+
+	SELECT @CustomerId = CustomerId FROM Sales.Customer WHERE CustomerName = N''Rural Cycle Emporium''
+	SET @InsertString = ''INSERT INTO Sales.CustomerContact (CustomerId, PhoneNumber, PhoneType) VALUES ('''''' + CAST(@CustomerId AS nvarchar(38)) + '''''', ''''453-555-0167'''', ''''Mobile'''')''
+	EXECUTE sp_executesql @InsertString
+
+	SET NOCOUNT OFF
+') -- End of usp_ResetPeerData
+END
+
+EXEC usp_ResetPeerData
+
+SET @DbNames = SUBSTRING(@DbNames, 0, LEN(@DbNames) - 20)
+
+END -- End of loop to create database objects.
+
+ 

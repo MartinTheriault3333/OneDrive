@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<installed-books version="3">
+  <locale-membership>
+    <locale name="EN-US">
+      <book-list>
+        <book ref="urn:2b00dcfd-685b-d3a1-9ee8-3781c671b79b" vendorname="Microsoft" id="B1064" displayname="Microsoft Help Viewer 2.1 Documentation" source="" kind="Vendor" productname="Microsoft Help Viewer 2.1 Documentation" productgroupname="" path="\Microsoft Help Viewer 2.1 Documentation" />
+      </book-list>
+      <book-membership>
+        <book ref="urn:2b00dcfd-685b-d3a1-9ee8-3781c671b79b">
+          <package ref="V2HELP_ON_HELP_B837_VS_110_EN-US_1" />
+        </book>
+      </book-membership>
+    </locale>
+  </locale-membership>
+  <branding-packages />
+</installed-books>
